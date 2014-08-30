@@ -1907,7 +1907,43 @@ dpif_linux_recv_purge(struct dpif *dpif_)
     dpif_linux_recv_purge__(dpif);
     fat_rwlock_unlock(&dpif->upcall_lock);
 }
+
+/* Meters */
+static void
+dpif_linux_meter_get_features(const struct dpif * dpif OVS_UNUSED,
+                              struct ofputil_meter_features *features)
+{
+    features->max_meters = 0;
+    features->band_types = 0;
+    features->capabilities = 0;
+    features->max_bands = 0;
+    features->max_color = 0;
+}
 
+static int
+dpif_linux_meter_set(struct dpif *dpif OVS_UNUSED,
+                     ofproto_meter_id *meter_id OVS_UNUSED,
+                     struct ofputil_meter_config *config OVS_UNUSED)
+{
+    return EFBIG; /* meter_id out of range */
+}
+
+static int
+dpif_linux_meter_get(const struct dpif *dpif OVS_UNUSED,
+                     ofproto_meter_id meter_id OVS_UNUSED,
+                     struct ofputil_meter_stats *stats OVS_UNUSED)
+{
+    return EFBIG; /* meter_id out of range */
+}
+
+static int
+dpif_linux_meter_del(struct dpif *dpif OVS_UNUSED,
+                     ofproto_meter_id meter_id OVS_UNUSED,
+                     struct ofputil_meter_stats *stats OVS_UNUSED)
+{
+    return EFBIG; /* meter_id out of range */
+}
+
 const struct dpif_class dpif_linux_class = {
     "system",
     dpif_linux_enumerate,
@@ -1948,6 +1984,10 @@ const struct dpif_class dpif_linux_class = {
     NULL,                       /* register_upcall_cb */
     NULL,                       /* enable_upcall */
     NULL,                       /* disable_upcall */
+    dpif_linux_meter_get_features,
+    dpif_linux_meter_set,
+    dpif_linux_meter_get,
+    dpif_linux_meter_del,
 };
 
 static int

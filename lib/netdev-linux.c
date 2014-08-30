@@ -1058,7 +1058,7 @@ netdev_linux_rxq_drain(struct netdev_rxq *rxq_)
  * expected to do additional queuing of packets. */
 static int
 netdev_linux_send(struct netdev *netdev_, struct dpif_packet **pkts, int cnt,
-                  bool may_steal)
+                  bool may_steal OVS_UNUSED)
 {
     int i;
     int error = 0;
@@ -1136,12 +1136,6 @@ netdev_linux_send(struct netdev *netdev_, struct dpif_packet **pkts, int cnt,
 
         /* Process the next packet in the batch */
         i++;
-    }
-
-    if (may_steal) {
-        for (i = 0; i < cnt; i++) {
-            dpif_packet_delete(pkts[i]);
-        }
     }
 
     if (error && error != EAGAIN) {

@@ -703,6 +703,9 @@ dpdk_queue_pkts(struct netdev_dpdk *dev, int qid,
         }
     }
     rte_spinlock_unlock(&txq->tx_lock);
+
+    /* Clear the transferred pointers to mark them as 'taken'. */
+    memset(pkts, 0, cnt * sizeof *pkts);
 }
 
 /* Tx function. Transmit packets indefinitely */
@@ -774,12 +777,6 @@ netdev_dpdk_send(struct netdev *netdev, struct dpif_packet **pkts, int cnt,
 
     if (!may_steal || pkts[0]->ofpbuf.source != OFPBUF_DPDK) {
         dpdk_do_tx_copy(netdev, pkts, cnt);
-
-        if (may_steal) {
-            for (i = 0; i < cnt; i++) {
-                dpif_packet_delete(pkts[i]);
-            }
-        }
     } else {
         int qid;
         int next_tx_idx = 0;
@@ -793,19 +790,18 @@ netdev_dpdk_send(struct netdev *netdev, struct dpif_packet **pkts, int cnt,
                 if (next_tx_idx != i) {
                     dpdk_queue_pkts(dev, qid,
                                     (struct rte_mbuf **)&pkts[next_tx_idx],
-                                    i-next_tx_idx);
+                                    i - next_tx_idx);
                 }
 
                 VLOG_WARN_RL(&rl, "Too big size %d max_packet_len %d",
                              (int)size , dev->max_packet_len);
 
-                dpif_packet_delete(pkts[i]);
                 dropped++;
                 next_tx_idx = i + 1;
             }
         }
         if (next_tx_idx != cnt) {
-           dpdk_queue_pkts(dev, qid,
+            dpdk_queue_pkts(dev, qid,
                             (struct rte_mbuf **)&pkts[next_tx_idx],
                             cnt-next_tx_idx);
         }

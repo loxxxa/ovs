@@ -3221,9 +3221,8 @@ rule_dpif_reduce_timeouts(struct rule_dpif *rule, uint16_t idle_timeout,
     ofproto_rule_reduce_timeouts(&rule->up, idle_timeout, hard_timeout);
 }
 
-/* Returns 'rule''s actions.  The caller owns a reference on the returned
- * actions and must eventually release it (with rule_actions_unref()) to avoid
- * a memory leak. */
+/* Returns 'rule''s actions.  The actions are managed via RCU and may be used
+ * until the calling thread quiesces. */
 const struct rule_actions *
 rule_dpif_get_actions(const struct rule_dpif *rule)
 {
@@ -4327,29 +4326,27 @@ ofproto_unixctl_trace_actions(struct unixctl_conn *conn, int argc,
         goto exit;
     }
 
-    /* Do the same checks as handle_packet_out() in ofproto.c.
-     *
-     * We pass a 'table_id' of 0 to ofproto_check_ofpacts(), which isn't
-     * strictly correct because these actions aren't in any table, but it's OK
-     * because it 'table_id' is used only to check goto_table instructions, but
-     * packet-outs take a list of actions and therefore it can't include
-     * instructions.
-     *
-     * We skip the "meter" check here because meter is an instruction, not an
-     * action, and thus cannot appear in ofpacts. */
+    /* Do the same checks as handle_packet_out() in ofproto.c. */
     in_port = ofp_to_u16(flow.in_port.ofp_port);
     if (in_port >= ofproto->up.max_ports && in_port < ofp_to_u16(OFPP_MAX)) {
         unixctl_command_reply_error(conn, "invalid in_port");
         goto exit;
     }
     if (enforce_consistency) {
-        retval = ofpacts_check_consistency(ofpbuf_data(&ofpacts), ofpbuf_size(&ofpacts),
-                                           &flow, u16_to_ofp(ofproto->up.max_ports),
-                                           0, 0, usable_protocols);
+        retval = ofpacts_check_consistency(ofpbuf_data(&ofpacts),
+                                           ofpbuf_size(&ofpacts),
+                                           &flow,
+                                           u16_to_ofp(ofproto->up.max_ports),
+                                           0, ofproto->up.n_tables,
+                                           usable_protocols);
     } else {
-        retval = ofpacts_check(ofpbuf_data(&ofpacts), ofpbuf_size(&ofpacts), &flow,
-                               u16_to_ofp(ofproto->up.max_ports), 0, 0,
-                               &usable_protocols);
+        retval = ofpacts_check(ofpbuf_data(&ofpacts), ofpbuf_size(&ofpacts),
+                               &flow, u16_to_ofp(ofproto->up.max_ports), 0,
+                               ofproto->up.n_tables, &usable_protocols);
+    }
+    if (!retval) {
+        retval = ofproto_check_ofpacts(&ofproto->up, ofpbuf_data(&ofpacts),
+                                       ofpbuf_size(&ofpacts));
     }
 
     if (retval) {
@@ -5048,6 +5045,58 @@ ofproto_dpif_delete_internal_flow(struct ofproto_dpif *ofproto,
     return 0;
 }
 
+static void
+meter_get_features(const struct ofproto *ofproto_,
+                   struct ofputil_meter_features *features)
+{
+    const struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+
+    dpif_meter_get_features(ofproto->backer->dpif, features);
+}
+
+static enum ofperr
+meter_set(struct ofproto *ofproto_, ofproto_meter_id *meter_id,
+          struct ofputil_meter_config *config)
+{
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+
+    switch (dpif_meter_set(ofproto->backer->dpif, meter_id, config)) {
+    case 0:
+        return 0;
+    case EFBIG: /* meter_id out of range */
+    case ENOMEM: /* Cannot allocate meter */
+        return OFPERR_OFPMMFC_OUT_OF_METERS;
+    case EBADF: /* Unsupported flags */
+        return OFPERR_OFPMMFC_BAD_FLAGS;
+    case EINVAL: /* Too many bands */
+        return OFPERR_OFPMMFC_OUT_OF_BANDS;
+    case ENODEV: /* Unsupported band type */
+        return OFPERR_OFPMMFC_BAD_BAND;
+    default:
+        return OFPERR_OFPMMFC_UNKNOWN;
+    }
+}
+
+static enum ofperr
+meter_get(const struct ofproto *ofproto_, ofproto_meter_id meter_id,
+          struct ofputil_meter_stats *stats)
+{
+    const struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+
+    if (!dpif_meter_get(ofproto->backer->dpif, meter_id, stats)) {
+        return 0;
+    }
+    return OFPERR_OFPMMFC_UNKNOWN_METER;
+}
+
+static void
+meter_del(struct ofproto *ofproto_, ofproto_meter_id meter_id)
+{
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+
+    dpif_meter_del(ofproto->backer->dpif, meter_id, NULL);
+}
+
 const struct ofproto_class ofproto_dpif_class = {
     init,
     enumerate_types,
@@ -5123,10 +5172,10 @@ const struct ofproto_class ofproto_dpif_class = {
     set_mcast_snooping,
     set_mcast_snooping_port,
     set_realdev,
-    NULL,                       /* meter_get_features */
-    NULL,                       /* meter_set */
-    NULL,                       /* meter_get */
-    NULL,                       /* meter_del */
+    meter_get_features,
+    meter_set,
+    meter_get,
+    meter_del,
     group_alloc,                /* group_alloc */
     group_construct,            /* group_construct */
     group_destruct,             /* group_destruct */

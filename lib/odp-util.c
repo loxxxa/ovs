@@ -74,6 +74,7 @@ odp_action_len(uint16_t type)
 
     switch ((enum ovs_action_attr) type) {
     case OVS_ACTION_ATTR_OUTPUT: return sizeof(uint32_t);
+    case OVS_ACTION_ATTR_METER: return sizeof(uint32_t);
     case OVS_ACTION_ATTR_USERSPACE: return -2;
     case OVS_ACTION_ATTR_PUSH_VLAN: return sizeof(struct ovs_action_push_vlan);
     case OVS_ACTION_ATTR_POP_VLAN: return 0;
@@ -423,6 +424,9 @@ format_odp_action(struct ds *ds, const struct nlattr *a)
     }
 
     switch (type) {
+    case OVS_ACTION_ATTR_METER:
+        ds_put_format(ds, "meter(%"PRIu32")", nl_attr_get_u32(a));
+        break;
     case OVS_ACTION_ATTR_OUTPUT:
         ds_put_format(ds, "%"PRIu32, nl_attr_get_u32(a));
         break;
@@ -667,6 +671,16 @@ parse_odp_action(const char *s, const struct simap *port_names,
     if (!strncmp(s, "pop_vlan", 8)) {
         nl_msg_put_flag(actions, OVS_ACTION_ATTR_POP_VLAN);
         return 8;
+    }
+
+    {
+        unsigned long long int meter_id;
+        int n = -1;
+
+        if (sscanf(s, "meter(%lli)%n", &meter_id, &n) > 0 && n > 0) {
+            nl_msg_put_u32(actions, OVS_ACTION_ATTR_METER, meter_id);
+            return n;
+        }
     }
 
     {

@@ -57,6 +57,9 @@ COVERAGE_DEFINE(dpif_flow_del);
 COVERAGE_DEFINE(dpif_execute);
 COVERAGE_DEFINE(dpif_purge);
 COVERAGE_DEFINE(dpif_execute_with_help);
+COVERAGE_DEFINE(dpif_meter_set);
+COVERAGE_DEFINE(dpif_meter_get);
+COVERAGE_DEFINE(dpif_meter_del);
 
 static const struct dpif_class *base_dpif_classes[] = {
 #ifdef __linux__
@@ -1065,11 +1068,12 @@ dpif_flow_dump_next(struct dpif_flow_dump_thread *thread,
 struct dpif_execute_helper_aux {
     struct dpif *dpif;
     int error;
+    const struct nlattr *meter_action; /* Non-NULL, if have a meter action. */
 };
 
 /* This is called for actions that need the context of the datapath to be
  * meaningful. */
-static void
+static int
 dpif_execute_helper_cb(void *aux_, struct dpif_packet **packets, int cnt,
                        struct pkt_metadata *md,
                        const struct nlattr *action, bool may_steal OVS_UNUSED)
@@ -1081,6 +1085,13 @@ dpif_execute_helper_cb(void *aux_, struct dpif_packet **packets, int cnt,
     ovs_assert(cnt == 1);
 
     switch ((enum ovs_action_attr)type) {
+    case OVS_ACTION_ATTR_METER:
+        /* Maintain a pointer to the first meter action seen. */
+        if (!aux->meter_action) {
+            aux->meter_action = action;
+        }
+        return cnt;
+
     case OVS_ACTION_ATTR_OUTPUT:
     case OVS_ACTION_ATTR_USERSPACE:
     case OVS_ACTION_ATTR_RECIRC: {
@@ -1088,12 +1099,28 @@ dpif_execute_helper_cb(void *aux_, struct dpif_packet **packets, int cnt,
         struct ofpbuf execute_actions;
         uint64_t stub[256 / 8];
 
-        if (md->tunnel.ip_dst) {
+        if (md->tunnel.ip_dst || aux->meter_action) {
+            ofpbuf_use_stub(&execute_actions, stub, sizeof stub);
+
+            if (aux->meter_action) {
+                const struct nlattr *a = aux->meter_action;
+
+                do {
+                    ofpbuf_put(&execute_actions, a, NLA_ALIGN(a->nla_len));
+                    /* Find next meter action before 'action', if any. */
+                    do {
+                        a = nl_attr_next(a);
+                    } while (a != action &&
+                             nl_attr_type(a) != OVS_ACTION_ATTR_METER);
+                } while (a != action);
+            }
+
             /* The Linux kernel datapath throws away the tunnel information
              * that we supply as metadata.  We have to use a "set" action to
              * supply it. */
-            ofpbuf_use_stub(&execute_actions, stub, sizeof stub);
-            odp_put_tunnel_action(&md->tunnel, &execute_actions);
+            if (md->tunnel.ip_dst) {
+                odp_put_tunnel_action(&md->tunnel, &execute_actions);
+            }
             ofpbuf_put(&execute_actions, action, NLA_ALIGN(action->nla_len));
 
             execute.actions = ofpbuf_data(&execute_actions);
@@ -1110,10 +1137,14 @@ dpif_execute_helper_cb(void *aux_, struct dpif_packet **packets, int cnt,
 
         log_execute_message(aux->dpif, &execute, true, aux->error);
 
-        if (md->tunnel.ip_dst) {
+        if (md->tunnel.ip_dst || aux->meter_action) {
             ofpbuf_uninit(&execute_actions);
+
+            /* Do not re-use the same meters for later output actions. */
+            aux->meter_action = NULL;
         }
-        break;
+
+        return (aux->error == 0) ? cnt : 0;
     }
 
     case OVS_ACTION_ATTR_HASH:
@@ -1127,6 +1158,7 @@ dpif_execute_helper_cb(void *aux_, struct dpif_packet **packets, int cnt,
     case __OVS_ACTION_ATTR_MAX:
         OVS_NOT_REACHED();
     }
+    return 0;
 }
 
 /* Executes 'execute' by performing most of the actions in userspace and
@@ -1137,7 +1169,7 @@ dpif_execute_helper_cb(void *aux_, struct dpif_packet **packets, int cnt,
 static int
 dpif_execute_with_help(struct dpif *dpif, struct dpif_execute *execute)
 {
-    struct dpif_execute_helper_aux aux = {dpif, 0};
+    struct dpif_execute_helper_aux aux = {dpif, 0, NULL};
     struct dpif_packet packet, *pp;
 
     COVERAGE_INC(dpif_execute_with_help);
@@ -1650,4 +1682,88 @@ log_execute_message(struct dpif *dpif, const struct dpif_execute *execute,
         ds_destroy(&ds);
         free(packet);
     }
+}
+
+/* Meters */
+void
+dpif_meter_get_features(const struct dpif *dpif,
+                        struct ofputil_meter_features *features)
+{
+    memset(features, 0, sizeof *features);
+    if (dpif->dpif_class->meter_get_features) {
+        dpif->dpif_class->meter_get_features(dpif, features);
+    }
+}
+
+/* Adds or modifies 'meter' in 'dpif'.   If '*meter_id' is UINT32_MAX,
+ * adds a new meter, otherwise modifies an existing meter.
+ *
+ * If meter is successfully added, sets '*meter_id' to the new meter's
+ * meter number. */
+int
+dpif_meter_set(struct dpif *dpif, ofproto_meter_id *meter_id,
+               struct ofputil_meter_config * config)
+{
+    int error;
+
+    COVERAGE_INC(dpif_meter_set);
+
+    error = dpif->dpif_class->meter_set(dpif, meter_id, config);
+    if (!error) {
+        VLOG_DBG_RL(&dpmsg_rl, "%s: DPIF meter %"PRIu32" set",
+                    dpif_name(dpif), meter_id->uint32);
+    } else {
+        VLOG_WARN_RL(&error_rl, "%s: failed to set DPIF meter %"PRIu32": %s",
+                     dpif_name(dpif), meter_id->uint32, ovs_strerror(error));
+        meter_id->uint32 = UINT32_MAX;
+    }
+    return error;
+}
+
+int
+dpif_meter_get(const struct dpif *dpif, ofproto_meter_id meter_id,
+               struct ofputil_meter_stats *stats)
+{
+    int error;
+
+    COVERAGE_INC(dpif_meter_get);
+
+    error = dpif->dpif_class->meter_get(dpif, meter_id, stats);
+    if (!error) {
+        VLOG_DBG_RL(&dpmsg_rl, "%s: DPIF meter %"PRIu32" get stats",
+                    dpif_name(dpif), meter_id.uint32);
+    } else {
+        VLOG_WARN_RL(&error_rl,
+                     "%s: failed to get DPIF meter %"PRIu32" stats: %s",
+                     dpif_name(dpif), meter_id.uint32, ovs_strerror(error));
+        stats->packet_in_count = ~0;
+        stats->byte_in_count = ~0;
+        stats->n_bands = 0;
+    }
+    return error;
+}
+
+int
+dpif_meter_del(struct dpif *dpif, ofproto_meter_id meter_id,
+               struct ofputil_meter_stats *stats)
+{
+    int error;
+
+    COVERAGE_INC(dpif_meter_del);
+
+    error = dpif->dpif_class->meter_del(dpif, meter_id, stats);
+    if (!error) {
+        VLOG_DBG_RL(&dpmsg_rl, "%s: DPIF meter %"PRIu32" deleted",
+                    dpif_name(dpif), meter_id.uint32);
+    } else {
+        VLOG_WARN_RL(&error_rl,
+                     "%s: failed to delete DPIF meter %"PRIu32": %s",
+                     dpif_name(dpif), meter_id.uint32, ovs_strerror(error));
+        if (stats) {
+            stats->packet_in_count = ~0;
+            stats->byte_in_count = ~0;
+            stats->n_bands = 0;
+        }
+    }
+    return error;
 }

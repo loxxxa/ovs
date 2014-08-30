@@ -734,11 +734,6 @@ netdev_bsd_send(struct netdev *netdev_, struct dpif_packet **pkts, int cnt,
     }
 
     ovs_mutex_unlock(&dev->mutex);
-    if (may_steal) {
-        for (i = 0; i < cnt; i++) {
-            dpif_packet_delete(pkts[i]);
-        }
-    }
 
     return error;
 }

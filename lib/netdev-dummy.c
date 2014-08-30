@@ -847,7 +847,7 @@ netdev_dummy_rxq_drain(struct netdev_rxq *rxq_)
 
 static int
 netdev_dummy_send(struct netdev *netdev, struct dpif_packet **pkts, int cnt,
-                  bool may_steal)
+                  bool may_steal OVS_UNUSED)
 {
     struct netdev_dummy *dev = netdev_dummy_cast(netdev);
     int error = 0;
@@ -892,12 +892,6 @@ netdev_dummy_send(struct netdev *netdev, struct dpif_packet **pkts, int cnt,
         }
 
         ovs_mutex_unlock(&dev->mutex);
-    }
-
-    if (may_steal) {
-        for (i = 0; i < cnt; i++) {
-            dpif_packet_delete(pkts[i]);
-        }
     }
 
     return error;

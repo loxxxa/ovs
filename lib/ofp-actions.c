@@ -1785,6 +1785,7 @@ ofpacts_pull_openflow_instructions(struct ofpbuf *openflow,
 
         om = ofpact_put_METER(ofpacts);
         om->meter_id = ntohl(oim->meter_id);
+        om->provider_meter_id = UINT32_MAX; /* No provider meter ID. */
     }
     if (insts[OVSINST_OFPIT11_APPLY_ACTIONS]) {
         const union ofp_action *actions;

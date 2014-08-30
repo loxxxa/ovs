@@ -1599,7 +1599,7 @@ struct ofproto_class {
      * leaving '*id' unchanged.  On failure, the existing meter configuration
      * is left intact. */
     enum ofperr (*meter_set)(struct ofproto *ofproto, ofproto_meter_id *id,
-                             const struct ofputil_meter_config *config);
+                             struct ofputil_meter_config *config);
 
     /* Gets the meter and meter band packet and byte counts for maximum of
      * 'stats->n_bands' bands for the meter with provider ID 'id' within
@@ -1646,6 +1646,8 @@ void ofproto_delete_flow(struct ofproto *,
     OVS_EXCLUDED(ofproto_mutex);
 void ofproto_flush_flows(struct ofproto *);
 
+enum ofperr ofproto_check_ofpacts(struct ofproto *, struct ofpact ofpacts[],
+                                  size_t ofpacts_len);
 
 static inline const struct rule_actions *
 rule_get_actions(const struct rule *rule)
